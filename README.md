@@ -47,7 +47,17 @@ disktriage                  # Interactive menu (arrow keys + Enter)
 disktriage --health         # Health check only (space, latency, BSODs)
 disktriage --scan --drive D # Auto-scan and suggest D: as target drive
 disktriage --min-gb 1.0     # Only show items larger than 1 GB
+disktriage --lang pt-BR     # Force Portuguese (Brasil)
+disktriage --lang en-US     # Force English (US)
 ```
+
+---
+
+## Multi-Language Support (i18n)
+
+DiskTriage supports **Português (Brasil)** (default) and **English (US)**.
+- On your first run, DiskTriage will prompt you to choose your preferred language and remember it for subsequent runs.
+- You can switch languages at any time from the Main Menu (`Option 9`) or by passing the `--lang <codecode>` CLI parameter.
 
 ---
 
