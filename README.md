@@ -70,18 +70,6 @@ DiskTriage supports **Português (Brasil)** (default) and **English (US)**.
 
 ---
 
-## No Python? Use the Standalone PowerShell Script
-
-If you are on a fresh Windows install or server without Python:
-
-```powershell
-.\Invoke-DiskTriage.ps1 -TargetDrive D
-```
-
-Runs the diagnostic and generates a `.ps1` remediation plan you can inspect and execute.
-
----
-
 ## License
 
 GPL-3.0
