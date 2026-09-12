@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "disktriage"
+version = "1.0.0"
+description = "Triagem de espaco em disco no Windows: diagnostico do SSD e inventario do que apagar, mover ou revisar"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["rich>=13.0"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+]
+
+[project.scripts]
+disktriage = "pydisktriage.cli:run"
+
+[tool.setuptools]
+packages = ["pydisktriage"]
