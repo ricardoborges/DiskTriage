@@ -1,9 +1,8 @@
-"""Leitura e escrita de variáveis de ambiente do usuário.
+"""Read and write user environment variables via the Windows Registry.
 
-Escreve direto em `HKCU\\Environment` em vez de chamar `setx`, que trunca
-silenciosamente qualquer valor acima de 1024 caracteres. Depois de gravar,
-transmite `WM_SETTINGCHANGE` para que processos novos enxerguem a mudança sem
-precisar de logoff.
+Writes directly to `HKCU\\Environment` instead of invoking `setx`, which silently
+truncates values longer than 1024 characters. After writing, broadcasts
+`WM_SETTINGCHANGE` so newly launched processes pick up the change without requiring a sign-out.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ _SUBKEY = "Environment"
 
 
 def get_user_env(name: str) -> str | None:
-    """Valor atual da variável no perfil do usuário, ou None se não existir."""
+    """Retrieve the current value of an environment variable from the user profile, or None if absent."""
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _SUBKEY) as key:
             value, _ = winreg.QueryValueEx(key, name)
@@ -32,7 +31,7 @@ def get_user_env(name: str) -> str | None:
 
 
 def _broadcast_change() -> None:
-    """Avisa o shell de que o bloco de ambiente mudou."""
+    """Notify the Windows Shell that the environment block has been modified."""
     try:
         send = ctypes.windll.user32.SendMessageTimeoutW
         send.argtypes = [
@@ -44,13 +43,13 @@ def _broadcast_change() -> None:
         send(HWND_BROADCAST, WM_SETTINGCHANGE, 0, _SUBKEY,
              SMTO_ABORTIFHUNG, 5000, ctypes.byref(result))
     except Exception:
-        # Falhar aqui só significa que apps já abertos não veem a mudança na
-        # hora. A gravação no registro, que é o que importa, já aconteceu.
+        # Failing here only means already open applications will not immediately see the change.
+        # The registry write itself has already succeeded.
         pass
 
 
 def set_user_env(name: str, value: str) -> None:
-    """Grava a variável no perfil do usuário e notifica o sistema."""
+    """Write environment variable to HKCU\\Environment and broadcast setting change."""
     kind = winreg.REG_EXPAND_SZ if "%" in value else winreg.REG_SZ
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _SUBKEY, 0,
                             winreg.KEY_SET_VALUE) as key:
@@ -59,7 +58,7 @@ def set_user_env(name: str, value: str) -> None:
 
 
 def unset_user_env(name: str) -> bool:
-    """Remove a variável. True se ela existia."""
+    """Delete environment variable from HKCU\\Environment. Return True if deleted, False otherwise."""
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _SUBKEY, 0,
                             winreg.KEY_SET_VALUE) as key:

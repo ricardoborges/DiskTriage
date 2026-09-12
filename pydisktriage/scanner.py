@@ -1,4 +1,4 @@
-"""Varredura: mede o catálogo e descobre o que não está nele."""
+"""Disk scanner: measures catalog entries and discovers uncataloged directories."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from .catalog import Finding, Target, build_catalog
 from .fsutil import iter_files, measure
 
 StatusFn = Callable[[str, int, int], None]
-"""Recebe (rótulo, índice atual, total) para atualizar a barra de progresso."""
+"""Receives (label, current_index, total) to update scan progress."""
 
 
 def scan_catalog(home: Path, min_gb: float = 1.0,
                  status: StatusFn | None = None) -> list[Finding]:
-    """Mede cada entrada do catálogo que existe nesta máquina."""
+    """Measure each catalog target that exists on the system."""
     targets: list[Target] = build_catalog(home)
     found: list[Finding] = []
 
@@ -46,10 +46,9 @@ def scan_catalog(home: Path, min_gb: float = 1.0,
 
 def scan_discovery(home: Path, known: Iterable[Finding], min_gb: float = 1.0,
                    status: StatusFn | None = None) -> list[Finding]:
-    """Procura pastas grandes que o catálogo não cobre.
+    """Search for large folders not covered by the predefined catalog.
 
-    É o que faz a ferramenta continuar útil numa máquina com ferramentas que eu
-    nunca vi: o catálogo dá o atalho, a descoberta dá a cobertura.
+    Provides deep discovery for newly installed tools and uncataloged directories.
     """
     known_paths = {str(f.path).rstrip("\\").lower() for f in known}
     roots = [home / "AppData" / "Local", home / "AppData" / "Roaming", home]
@@ -74,8 +73,8 @@ def scan_discovery(home: Path, known: Iterable[Finding], min_gb: float = 1.0,
         low = str(d).rstrip("\\").lower()
         if low in known_paths:
             continue
-        # Pula se for pai de algo que o catálogo já contabilizou, para não
-        # somar os mesmos bytes duas vezes no total.
+        # Skip if directory is parent of an already measured catalog entry
+        # to avoid double-counting bytes in the summary totals.
         if any(k.startswith(low + "\\") for k in known_paths):
             continue
 
@@ -85,7 +84,7 @@ def scan_discovery(home: Path, known: Iterable[Finding], min_gb: float = 1.0,
 
         results.append(Finding(
             ident=d.name, path=d, kind="revisar", size=m.size, files=m.files,
-            is_file=False, note="Descoberto pela varredura genérica", discovered=True,
+            is_file=False, note="Discovered by generic scan", discovered=True,
         ))
 
     results.sort(key=lambda f: f.size, reverse=True)
@@ -94,7 +93,7 @@ def scan_discovery(home: Path, known: Iterable[Finding], min_gb: float = 1.0,
 
 def scan_large_files(home: Path, min_gb: float = 2.0,
                      limit: int = 25) -> list[tuple[Path, int]]:
-    """Arquivos únicos grandes — .vhdx, .gguf, imagens de VM, modelos soltos."""
+    """Scan for standalone large files (e.g. .vhdx, .gguf, VM images, loose AI models)."""
     threshold = int(min_gb * 1024**3)
     big = [(p, s) for p, s in iter_files(home) if s >= threshold]
     big.sort(key=lambda t: t[1], reverse=True)
@@ -102,5 +101,5 @@ def scan_large_files(home: Path, min_gb: float = 2.0,
 
 
 def reclaimable(findings: Iterable[Finding]) -> int:
-    """Bytes recuperáveis sem julgamento humano (descartável + movível)."""
+    """Calculate total reclaimable bytes without requiring manual review (disposable + relocatable)."""
     return sum(f.size for f in findings if f.kind != "revisar")

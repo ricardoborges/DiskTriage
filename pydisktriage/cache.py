@@ -1,4 +1,4 @@
-"""Persistência em cache da última varredura para inicialização instantânea."""
+"""Scan persistence cache for instant startup and session resumption."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .catalog import Finding
 
 
 def get_default_cache_path() -> Path:
-    """Retorna o caminho padrão do arquivo de cache em %LOCALAPPDATA%\\DiskTriage\\last_scan.json."""
+    """Return default cache file path in %LOCALAPPDATA%\\DiskTriage\\last_scan.json."""
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         base_dir = Path(local_app_data) / "DiskTriage"
@@ -33,7 +33,7 @@ class CachedScan:
 
     @property
     def formatted_time(self) -> str:
-        """Formata o timestamp para exibição amigável (DD/MM/AAAA HH:MM)."""
+        """Format scan timestamp for friendly display (DD/MM/YYYY HH:MM)."""
         try:
             dt = datetime.fromisoformat(self.timestamp)
             return dt.strftime("%d/%m/%Y %H:%M")
@@ -49,7 +49,7 @@ def save_scan_cache(
     discovery: bool,
     cache_file: Path | None = None,
 ) -> bool:
-    """Salva a varredura atual em disco de forma atômica."""
+    """Save current scan findings atomically to disk."""
     target_file = cache_file or get_default_cache_path()
 
     try:
@@ -81,7 +81,7 @@ def save_scan_cache(
     }
 
     try:
-        # Gravação atômica com arquivo temporário no mesmo diretório
+        # Atomic write with temp file in the same directory
         temp_dir = target_file.parent
         with tempfile.NamedTemporaryFile("w", dir=temp_dir, delete=False, encoding="utf-8") as tf:
             json.dump(payload, tf, ensure_ascii=False, indent=2)
@@ -93,7 +93,7 @@ def save_scan_cache(
 
 
 def load_scan_cache(cache_file: Path | None = None) -> CachedScan | None:
-    """Carrega a última varredura do disco. Retorna None se não existir ou estiver corrompido."""
+    """Load latest scan from disk. Return None if absent or corrupted."""
     target_file = cache_file or get_default_cache_path()
 
     if not target_file.is_file():
@@ -133,7 +133,7 @@ def load_scan_cache(cache_file: Path | None = None) -> CachedScan | None:
 
 
 def clear_scan_cache(cache_file: Path | None = None) -> bool:
-    """Remove o arquivo de cache se existir."""
+    """Delete scan cache file from disk if it exists."""
     target_file = cache_file or get_default_cache_path()
     try:
         if target_file.exists():

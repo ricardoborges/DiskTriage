@@ -1,8 +1,8 @@
-"""Travessia de sistema de arquivos, medição, cópia e remoção.
+"""Filesystem traversal, size measurement, file moving, and recursive deletion.
 
-Tudo aqui evita seguir reparse points (junctions e symlinks). Sem esse cuidado,
-`C:\\Users\\Todos os Usuários` — que aponta para `C:\\ProgramData` — é contado duas
-vezes, e uma remoção recursiva pode sair da árvore pretendida.
+Strictly avoids traversing reparse points (NTFS junctions and symlinks).
+Without this precaution, junctions such as `C:\\Users\\All Users` (pointing to `C:\\ProgramData`)
+would be double-counted, and recursive deletes could escape the target directory tree.
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ from typing import Callable, Iterator
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 ProgressFn = Callable[[int], None]
-"""Recebe o número de bytes processados desde a última chamada."""
+"""Receives the number of bytes processed since the previous invocation."""
 
 
 def is_reparse_point(entry: os.DirEntry | Path) -> bool:
-    """True para junction, symlink ou qualquer outro reparse point."""
+    """Return True if entry is an NTFS junction, symlink, or other reparse point."""
     try:
         if isinstance(entry, os.DirEntry):
             st = entry.stat(follow_symlinks=False)
@@ -35,11 +35,10 @@ def is_reparse_point(entry: os.DirEntry | Path) -> bool:
 
 
 def iter_files(root: Path) -> Iterator[tuple[Path, int]]:
-    """Percorre `root` e devolve (caminho, tamanho) de cada arquivo.
+    """Traverse `root` yielding (path, file_size) for every regular file.
 
-    Diretórios inacessíveis são pulados em silêncio: numa varredura de perfil
-    inteiro sempre há algo que o usuário não pode ler, e abortar por causa disso
-    tornaria a ferramenta inútil.
+    Inaccessible folders are silently skipped: scanning a full user profile will
+    always encounter locked or unreadable files, and aborting would render the tool unusable.
     """
     stack: list[Path] = [root]
     while stack:
@@ -66,7 +65,7 @@ class Measurement:
 
 
 def measure(path: Path, progress: ProgressFn | None = None) -> Measurement:
-    """Soma recursiva de um diretório, ou o tamanho de um arquivo único."""
+    """Recursive byte summation of a directory or single file size."""
     try:
         st = path.lstat()
     except OSError:
@@ -86,7 +85,7 @@ def measure(path: Path, progress: ProgressFn | None = None) -> Measurement:
 
 
 def free_space(drive: str) -> int:
-    """Bytes livres na letra de unidade informada (ex.: 'D')."""
+    """Free disk space in bytes for specified drive letter (e.g. 'D')."""
     letter = drive.rstrip(":/\\")
     return shutil.disk_usage(letter + ":\\").free
 
@@ -105,10 +104,10 @@ class OpResult:
 
 def delete_tree(path: Path, progress: ProgressFn | None = None,
                 keep_root: bool = True) -> OpResult:
-    """Apaga o conteúdo de um diretório (ou o arquivo, se for arquivo).
+    """Delete the contents of a directory (or the file if single file).
 
-    `keep_root=True` preserva a pasta em si — várias ferramentas só recriam o
-    cache se o diretório continuar existindo.
+    `keep_root=True` preserves the root directory itself, as many developer tools
+    only recreate their caches if the base folder exists.
     """
     result = OpResult(ok=True)
 
@@ -154,7 +153,7 @@ def delete_tree(path: Path, progress: ProgressFn | None = None,
                 if progress:
                     progress(size)
 
-    # Segunda passada: remove os diretórios que ficaram vazios, de baixo para cima.
+    # Second pass: remove emptied directories from bottom to top
     for current, dirs, _ in os.walk(path, topdown=False):
         for d in dirs:
             target = Path(current) / d
@@ -175,7 +174,7 @@ def delete_tree(path: Path, progress: ProgressFn | None = None,
 
 
 def _move_tree_robocopy(src: Path, dst: Path, progress: ProgressFn | None = None) -> OpResult:
-    """Executa a movimentação usando o utilitário nativo robocopy do Windows em modo multithread."""
+    """Execute folder move using Windows native multi-threaded robocopy."""
     result = OpResult(ok=True)
     dst.mkdir(parents=True, exist_ok=True)
 
@@ -209,7 +208,7 @@ def _move_tree_robocopy(src: Path, dst: Path, progress: ProgressFn | None = None
         )
     except OSError as exc:
         result.ok = False
-        result.errors.append(f"Não foi possível executar o robocopy: {exc}")
+        result.errors.append(f"Could not execute robocopy: {exc}")
         return result
 
     try:
@@ -233,16 +232,15 @@ def _move_tree_robocopy(src: Path, dst: Path, progress: ProgressFn | None = None
 
     proc.wait()
 
-    # Códigos do robocopy: 0..7 são variações de sucesso, >= 8 indica erro de cópia
+    # Robocopy exit codes: 0..7 are success variations, >= 8 indicates copy errors
     if proc.returncode >= 8:
         result.ok = False
         if not result.errors:
-            result.errors.append(f"robocopy retornou código de erro {proc.returncode}")
+            result.errors.append(f"robocopy exited with code {proc.returncode}")
     else:
         if src.exists():
-            # Quando a pasta de destino já continha arquivos (ex.: mesclagem ou tentativa anterior),
-            # o robocopy não apaga da origem os arquivos que já eram idênticos no destino.
-            # Verificamos se os arquivos restantes na origem já estão idênticos no destino para limpá-los.
+            # If destination already had files (e.g. merging), robocopy leaves identical files in source.
+            # Clean up source files that already match destination.
             leftover_files = list(iter_files(src))
             if leftover_files:
                 def _verify_and_remove(item: tuple[Path, int]) -> tuple[bool, Path, str | None]:
@@ -254,7 +252,7 @@ def _move_tree_robocopy(src: Path, dst: Path, progress: ProgressFn | None = None
                             os.chmod(f_path, stat.S_IWRITE)
                             f_path.unlink()
                             return True, f_path, None
-                        return False, f_path, f"Arquivo ausente ou com tamanho diferente em {target}"
+                        return False, f_path, f"File missing or size mismatch in {target}"
                     except OSError as exc:
                         return False, f_path, str(exc)
 
@@ -264,7 +262,7 @@ def _move_tree_robocopy(src: Path, dst: Path, progress: ProgressFn | None = None
                             result.ok = False
                             result.errors.append(f"{f_path}: {err}")
 
-            # Remove os diretórios que ficaram vazios
+            # Remove emptied directories
             for current, dirs, _ in os.walk(src, topdown=False):
                 for d in dirs:
                     d_path = Path(current) / d
@@ -280,7 +278,7 @@ def _move_tree_robocopy(src: Path, dst: Path, progress: ProgressFn | None = None
                     src.rmdir()
                 elif result.ok:
                     result.ok = False
-                    result.errors.append(f"Alguns arquivos não puderam ser movidos de {src}")
+                    result.errors.append(f"Some files could not be relocated from {src}")
             except OSError as exc:
                 result.errors.append(f"{src}: {exc}")
 
@@ -288,7 +286,7 @@ def _move_tree_robocopy(src: Path, dst: Path, progress: ProgressFn | None = None
 
 
 def _move_tree_python(src: Path, dst: Path, progress: ProgressFn | None = None) -> OpResult:
-    """Fallback multiplataforma: cópia multithread com cache de diretórios."""
+    """Multiplatform fallback: multi-threaded copy with folder caching."""
     result = OpResult(ok=True)
     created_dirs: set[Path] = set()
     files = list(iter_files(src))
@@ -328,10 +326,10 @@ def _move_tree_python(src: Path, dst: Path, progress: ProgressFn | None = None) 
 
 
 def move_tree(src: Path, dst: Path, progress: ProgressFn | None = None) -> OpResult:
-    """Move uma árvore para outro caminho, possivelmente em outro volume.
+    """Move directory tree to another location, possibly on another drive.
 
-    No Windows, utiliza o robocopy com multithreading (/MT:16) para velocidade nativa máxima.
-    Caso o robocopy não esteja disponível, recorre a cópia paralela via ThreadPoolExecutor.
+    On Windows, uses robocopy with multithreading (/MT:16) for native performance.
+    Falls back to parallel Python copy via ThreadPoolExecutor if robocopy is unavailable.
     """
     result = OpResult(ok=True)
 
@@ -362,7 +360,7 @@ def move_tree(src: Path, dst: Path, progress: ProgressFn | None = None) -> OpRes
 
 
 def human(size: float) -> str:
-    """Formata bytes de forma legível."""
+    """Format byte size into human-readable representation."""
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(size) < 1024 or unit == "TB":
             if unit in ("B", "KB"):

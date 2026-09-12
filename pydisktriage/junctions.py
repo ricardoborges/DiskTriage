@@ -1,4 +1,4 @@
-"""Gerenciamento de Junções NTFS (mklink /J): movimentação, persistência e reversibilidade."""
+"""NTFS Junction (mklink /J) management: relocation, persistence, and rollback."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 from .fsutil import is_reparse_point, move_tree, ProgressFn
+from .i18n import t
 
 
 def get_default_junctions_file() -> Path:
-    """Retorna o caminho padrão do arquivo de rastreamento de junções em %LOCALAPPDATA%\\DiskTriage\\junctions.json."""
+    """Return default tracking JSON file path in %LOCALAPPDATA%\\DiskTriage\\junctions.json."""
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         base_dir = Path(local_app_data) / "DiskTriage"
@@ -37,7 +37,7 @@ class JunctionRecord:
 
 
 def load_junctions(path: Path | None = None) -> list[JunctionRecord]:
-    """Carrega o histórico de junções do arquivo JSON."""
+    """Load tracked junction records from JSON file."""
     file_path = path or get_default_junctions_file()
     if not file_path.is_file():
         return []
@@ -64,7 +64,7 @@ def load_junctions(path: Path | None = None) -> list[JunctionRecord]:
 
 
 def save_junctions(records: list[JunctionRecord], path: Path | None = None) -> bool:
-    """Salva a lista de junções no arquivo JSON de forma segura."""
+    """Safely save junction records list to JSON file."""
     file_path = path or get_default_junctions_file()
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,45 +76,45 @@ def save_junctions(records: list[JunctionRecord], path: Path | None = None) -> b
 
 
 def create_junction_link(src: Path, dst: Path) -> tuple[bool, str]:
-    """Cria um Junction Point NTFS no caminho `src` apontando para `dst`.
+    """Create an NTFS Junction point at `src` pointing to `dst`.
 
-    No Windows, `cmd /c mklink /J` não exige privilégios de administrador.
+    On Windows, `cmd /c mklink /J` does not require administrator privileges.
     """
     if src.exists():
-        return False, f"O caminho de origem já existe: {src}"
+        return False, f"Source path already exists: {src}"
 
     if not dst.exists():
-        return False, f"O caminho de destino não existe: {dst}"
+        return False, f"Destination path does not exist: {dst}"
 
     cmd = ["cmd", "/c", "mklink", "/J", str(src).rstrip("\\/"), str(dst).rstrip("\\/")]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="cp850", errors="replace")
         if proc.returncode != 0:
             err = proc.stderr.strip() or proc.stdout.strip()
-            return False, f"Falha ao criar junção: {err}"
+            return False, t("junctions.mklink_failed", err=err)
 
         if not (src.exists() and is_reparse_point(src)):
-            return False, f"A junção foi executada mas não pôde ser confirmada em {src}"
+            return False, f"Junction executed but could not be verified at {src}"
 
-        return True, f"Junção criada: {src} -> {dst}"
+        return True, f"Junction created: {src} -> {dst}"
     except OSError as exc:
-        return False, f"Erro ao executar mklink: {exc}"
+        return False, t("junctions.mklink_failed", err=str(exc))
 
 
 def remove_junction_link(src: Path) -> tuple[bool, str]:
-    """Remove com segurança o link de junção sem apagar os dados do destino."""
+    """Safely remove the junction reparse link without touching destination data."""
     if not src.exists():
-        return False, f"O caminho não existe: {src}"
+        return False, f"Path does not exist: {src}"
 
     if not is_reparse_point(src):
-        return False, f"O caminho não é uma junção/reparse point: {src}"
+        return False, f"Path is not a valid junction/reparse point: {src}"
 
     try:
-        # No Windows, rmdir em um junction point remove APENAS o link, preservando o destino intacto.
+        # On Windows, os.rmdir on an NTFS junction removes ONLY the link, preserving target contents.
         os.rmdir(src)
-        return True, f"Link de junção removido: {src}"
+        return True, f"Junction link removed: {src}"
     except OSError as exc:
-        return False, f"Não foi possível remover o link da junção: {exc}"
+        return False, t("junctions.rmdir_failed", src=src, err=str(exc))
 
 
 def move_and_create_junction(
@@ -125,27 +125,27 @@ def move_and_create_junction(
     progress: ProgressFn | None = None,
     junctions_file: Path | None = None,
 ) -> tuple[bool, str, str | None]:
-    """Move a pasta para outro disco e cria uma junção NTFS no lugar original.
+    """Move folder to another disk and establish an NTFS directory junction at the original location.
 
-    Retorna: (sucesso, mensagem, junction_id).
+    Returns: (success, message, junction_id).
     """
     if is_reparse_point(src):
-        return False, f"{src} já é uma junção NTFS.", None
+        return False, f"{src} is already an NTFS junction.", None
 
-    # 1. Mover os arquivos
+    # 1. Relocate files
     move_result = move_tree(src, dst, progress=progress)
     if not move_result.ok:
-        err_msg = "; ".join(move_result.errors[:3]) if move_result.errors else "Erro desconhecido"
-        return False, f"A movimentação dos arquivos falhou: {err_msg}", None
+        err_msg = "; ".join(move_result.errors[:3]) if move_result.errors else "Unknown error"
+        return False, f"File relocation failed: {err_msg}", None
 
-    # 2. Criar a junção
+    # 2. Create junction link
     link_ok, link_msg = create_junction_link(src, dst)
     if not link_ok:
-        # Rollback: tenta mover de volta
+        # Rollback: attempt to move files back
         move_tree(dst, src)
-        return False, f"Falha ao criar junção ({link_msg}). Arquivos restaurados na origem.", None
+        return False, f"Failed to create junction ({link_msg}). Files restored to source.", None
 
-    # 3. Registrar a junção para persistência e rastreamento
+    # 3. Track junction for rollback support
     junction_id = str(uuid.uuid4())[:8]
     record = JunctionRecord(
         id=junction_id,
@@ -161,7 +161,7 @@ def move_and_create_junction(
     records.append(record)
     save_junctions(records, junctions_file)
 
-    return True, f"Junção criada com sucesso para {name}.", junction_id
+    return True, f"Junction successfully created for {name}.", junction_id
 
 
 def revert_junction(
@@ -169,7 +169,7 @@ def revert_junction(
     progress: ProgressFn | None = None,
     junctions_file: Path | None = None,
 ) -> tuple[bool, str]:
-    """Reverte uma junção: remove o link e move os arquivos de volta para a origem."""
+    """Revert an NTFS junction: remove link and move files back to original location."""
     records = load_junctions(junctions_file)
     target_record: JunctionRecord | None = None
     for r in records:
@@ -178,36 +178,36 @@ def revert_junction(
             break
 
     if not target_record:
-        return False, f"Junção ativa com ID '{junction_id}' não encontrada."
+        return False, t("junctions.not_found_by_id", jid=junction_id)
 
     src = Path(target_record.src)
     dst = Path(target_record.dst)
 
     if not src.exists():
-        return False, f"Caminho da junção não existe: {src}"
+        return False, t("junctions.src_missing", src=src)
 
     if not is_reparse_point(src):
-        return False, f"{src} não é uma junção válida."
+        return False, t("junctions.src_not_reparse", src=src)
 
     if not dst.exists():
-        return False, f"Pasta de destino com os dados não foi encontrada: {dst}"
+        return False, t("junctions.dst_missing", dst=dst)
 
-    # 1. Remove o link da junção na origem
+    # 1. Remove junction link at source
     rem_ok, rem_msg = remove_junction_link(src)
     if not rem_ok:
-        return False, f"Falha ao remover o link da junção: {rem_msg}"
+        return False, rem_msg
 
-    # 2. Move os dados de volta de dst para src
+    # 2. Move data back from dst to src
     move_result = move_tree(dst, src, progress=progress)
     if not move_result.ok:
-        # Tenta recriar o link para não deixar órfão
+        # Re-create junction link so destination is not orphaned
         create_junction_link(src, dst)
         errs = "; ".join(move_result.errors[:3])
-        return False, f"Falha ao mover os arquivos de volta para {src}: {errs}"
+        return False, f"Failed to restore files to {src}: {errs}"
 
-    # 3. Atualiza o registro
+    # 3. Update record status
     target_record.active = False
     target_record.reverted_at = datetime.now().isoformat(timespec="minutes")
     save_junctions(records, junctions_file)
 
-    return True, f"Junção de {target_record.name} revertida com sucesso. Arquivos restaurados em {src}."
+    return True, t("junctions.revert_success", src=src)
