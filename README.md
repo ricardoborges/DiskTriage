@@ -38,6 +38,10 @@ disktriage
    - **Move + NTFS Junction**: Move folder and create an NTFS directory junction (`mklink /J`), keeping full tracking and 1-click rollback.
    - **Scan Persistence**: Remembers scan results so you don't have to wait for rescans every time you launch.
 
+> [!TIP]
+> **Relocate Package Caches & Auto-Update Environment Variables:**  
+> You can easily move bulky package caches (such as `pip`, `npm`, `cargo`, or `huggingface`) from your system drive to a secondary drive (like `D:`) to free up gigabytes on `C:`. When using the **Move + Env Var** option, DiskTriage safely transfers the directory and automatically updates the corresponding Windows user environment variable (`HKCU\Environment`) with the new path—ensuring your development tools keep working seamlessly without manual configuration.
+
 ---
 
 ## CLI Options
