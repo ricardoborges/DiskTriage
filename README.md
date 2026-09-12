@@ -1,100 +1,77 @@
-# disktriage
+# DiskTriage
 
-Triagem de espaço em disco no Windows. Diagnostica a saúde do SSD e mostra o que
-dá para apagar, o que dá para mover para outro disco, e o que exige julgamento
-humano — com menu interativo para executar cada ação.
+A simple CLI tool to reclaim space on your Windows `C:` drive safely.
 
-Nasceu de um diagnóstico real: um BSOD `0x1E_C0000006` (`nt!HvpGetCellPaged`)
-causado por um SSD de boot a 2,7% de espaço livre. O disco travava por 1,5 s numa
-leitura, o kernel não conseguia paginar uma célula do registro, e o Windows caía.
-A ferramenta automatiza o caminho que levou até essa conclusão.
+It checks SSD health, tracks down bloat (dev tools, AI models, package caches, game stores), and helps you either delete it or move it to another drive — with an interactive terminal menu and built-in safety checks.
 
-## Instalação
+Built after a full boot SSD (2.7% free space) caused 1.5-second disk read freezes and triggered a Windows `0x1E_C0000006` (`nt!HvpGetCellPaged`) blue screen.
+
+---
+
+## Quick Start
 
 ```powershell
-cd C:\Users\<voce>\Tools\DiskTriage
-pip install -r requirements.txt      # só precisa de rich
+git clone https://github.com/ricardoborges/DiskTriage.git
+cd DiskTriage
 
-# ou, para ter o comando `disktriage` no PATH:
+# Install dependencies and the `disktriage` CLI
 pip install -e .
 ```
 
-## Uso
+Run it:
+```powershell
+disktriage
+```
+
+> **Tip:** Run PowerShell as Administrator to see physical SSD read/write latency counters via `Get-StorageReliabilityCounter`.
+
+---
+
+## What It Does
+
+1. **System Health**: Checks free space across drives, SSD latency, pagefile location, and recent Windows BSOD bugchecks (last 90 days).
+2. **Cache Catalog**: Scans 50+ known dev and gaming caches (`pip`, `npm`, `cargo`, `docker`, `huggingface`, `pyenv`, `gradle`, `steam`, etc.).
+3. **Smart Discovery**: Finds large unexpected folders in your user profile and `AppData`.
+4. **Actionable Fixes**:
+   - **Delete**: Safely wipe disposable, rebuildable caches.
+   - **Move + Env Var**: Move folder to another drive (e.g. `D:`) and update user environment variable in registry (`HKCU\Environment`).
+   - **Move + NTFS Junction**: Move folder and create an NTFS directory junction (`mklink /J`), keeping full tracking and 1-click rollback.
+   - **Scan Persistence**: Remembers scan results so you don't have to wait for rescans every time you launch.
+
+---
+
+## CLI Options
 
 ```powershell
-python -m pydisktriage                  # menu interativo
-python -m pydisktriage --health         # só o diagnóstico, sem menu
-python -m pydisktriage --scan --drive D # já entra varrido, sugerindo mover p/ D:
-python -m pydisktriage --min-gb 0.5     # baixa o limiar de exibição
+disktriage                  # Interactive menu (arrow keys + Enter)
+disktriage --health         # Health check only (space, latency, BSODs)
+disktriage --scan --drive D # Auto-scan and suggest D: as target drive
+disktriage --min-gb 1.0     # Only show items larger than 1 GB
 ```
 
-Em console legado (cmd.exe antigo), a saída é convertida para UTF-8
-automaticamente e os marcadores caem para ASCII se o codepage não der conta.
-Para o visual completo, use o Windows Terminal ou rode `chcp 65001` antes.
+---
 
-Rode **como administrador** para ver a seção de latência dos discos —
-`Get-StorageReliabilityCounter` exige elevação, e é ela que denuncia um SSD
-travando.
+## Safety First
 
-## As quatro etapas
+- **Explicit confirmation**: You must type the item name to delete; no accidental single-key deletes.
+- **Protected paths**: `WinSxS`, `System32`, `Windows\Installer`, and `Program Files` are strictly blocked.
+- **Safe file moves**: Multi-threaded `robocopy` with pre-flight destination free space checks. Source files are only removed after the copy verifies successfully.
+- **No symlink loops**: Never recursively follows junctions or symlinks.
 
-**1. Saúde.** Espaço por volume, latência máxima de leitura/escrita/flush por
-disco físico, localização do pagefile, e o histórico de telas azuis dos últimos
-90 dias com o significado de cada código. Responde: *isso é urgente?*
+---
 
-**2. Catálogo.** Mede ~50 caches conhecidos de ferramentas de dev, IA e jogos.
-Cada entrada já vem classificada e, quando existe, traz a variável de ambiente
-que redireciona a ferramenta para outro disco.
+## No Python? Use the Standalone PowerShell Script
 
-**3. Descoberta.** Varredura genérica por pastas e arquivos grandes que o
-catálogo não cobre. É o que mantém a ferramenta útil numa máquina com programas
-que o catálogo nunca viu.
-
-**4. Ações.** Menu por item: excluir, mover para outro disco com ajuste
-automático da variável, só definir a variável, ver o comando nativo da
-ferramenta, ou abrir no Explorer.
-
-## Categorias
-
-| Categoria | Significado |
-|---|---|
-| **Descartável** | Cache reconstruível. Apagar não custa nada além de um re-download. |
-| **Movível** | Cache grande que aceita ser redirecionado por variável de ambiente. |
-| **Revisar** | Precisa de decisão humana, ou exige ferramenta própria (DISM, PatchCleaner). |
-
-## Segurança
-
-- Nada é apagado sem que você digite o nome do item — não basta um "s".
-- `WinSxS`, `Windows\Installer`, `System32` e `Program Files` são recusados
-  sempre, mesmo se você pedir. Eles têm ferramenta própria; apagar na mão quebra
-  o Windows ou a desinstalação de programas.
-- Mover verifica espaço no destino antes de começar e só remove a origem depois
-  que todos os arquivos chegaram. Se qualquer cópia falhar, a origem fica
-  intacta.
-- Junctions e symlinks nunca são seguidos. Sem isso,
-  `C:\Users\Todos os Usuários` (que aponta para `C:\ProgramData`) seria contado
-  duas vezes, e uma remoção recursiva sairia da árvore pretendida.
-- Variáveis são gravadas em `HKCU\Environment` via `winreg`, não via `setx`, que
-  trunca silenciosamente valores acima de 1024 caracteres.
-
-## Estrutura
-
-```
-pydisktriage/
-├── catalog.py   # o catálogo de caches conhecidos e as regras de proteção
-├── fsutil.py    # travessia, medição, cópia e remoção com progresso
-├── health.py    # espaço, latência, pagefile e bugchecks
-├── envvars.py   # leitura e escrita de variáveis do usuário
-├── scanner.py   # catálogo + descoberta
-├── ui.py        # tudo que desenha na tela
-└── cli.py       # menu e roteamento
-```
-
-## Versão PowerShell
-
-`Invoke-DiskTriage.ps1`, no diretório acima, faz o diagnóstico e gera um plano
-`.ps1` de remediação, sem interatividade. Útil quando não há Python na máquina.
+If you are on a fresh Windows install or server without Python:
 
 ```powershell
 .\Invoke-DiskTriage.ps1 -TargetDrive D
 ```
+
+Runs the diagnostic and generates a `.ps1` remediation plan you can inspect and execute.
+
+---
+
+## License
+
+GPL-3.0
