@@ -1,4 +1,4 @@
-"""Navegação interativa por teclado para menus e seleção de itens (setas cima/baixo e Enter)."""
+"""Interactive keyboard navigation for menus and item selection (arrow keys and Enter)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from rich.text import Text
 from . import ui
 from .catalog import CATEGORY_LABEL, CATEGORY_STYLE, Finding
 from .fsutil import human
+from .i18n import t
 
 try:
     import msvcrt
@@ -22,13 +23,13 @@ except ImportError:
 
 
 def _read_key() -> str:
-    """Lê uma tecla no terminal Windows. Devolve 'UP', 'DOWN', 'ENTER', 'ESC' ou o caractere digitado."""
+    """Read a single key press in Windows terminal. Returns 'UP', 'DOWN', 'ENTER', 'ESC', or character."""
     if not msvcrt:
         return ""
 
     ch = msvcrt.getwch()
 
-    # Teclas especiais no Windows (setas, Home, End, Delete, etc.)
+    # Special keys in Windows console (arrow keys, Home, End, Delete, etc.)
     if ch in ("\x00", "\xe0"):
         ch2 = msvcrt.getwch()
         if ch2 == "H":
@@ -55,23 +56,23 @@ def _read_key() -> str:
 
 
 def render_menu_table(options: list[tuple[str, str]], selected_idx: int) -> Table:
-    """Renderiza a tabela de menu com a linha ativa destacada de forma contínua."""
-    t = Table(box=None, padding=(0, 0), show_header=False)
-    t.add_column("Cursor", width=3)
-    t.add_column("Item")
+    """Render the menu table with the active item highlighted with a cursor marker."""
+    t_table = Table(box=None, padding=(0, 0), show_header=False)
+    t_table.add_column("Cursor", width=3)
+    t_table.add_column("Item")
 
     for i, (key, label) in enumerate(options):
         if i == selected_idx:
-            t.add_row(
+            t_table.add_row(
                 Text(" > ", style="bold bright_cyan"),
                 Text(f" {key:>2}  {label} ", style="bold bright_white on blue"),
             )
         else:
-            t.add_row(
+            t_table.add_row(
                 Text("   "),
                 Text(f" {key:>2}  ", style="bold cyan") + Text(f"{label} ", style="white"),
             )
-    return t
+    return t_table
 
 
 def select_menu(
@@ -79,18 +80,17 @@ def select_menu(
     title: str = "Menu",
     default_key: str | None = None,
 ) -> str:
-    """Apresenta um menu navegável com setas (↑ / ↓) e confirmação por Enter.
+    """Present an interactive menu navigable with arrow keys (↑ / ↓) and confirmed with Enter.
 
-    Permite também teclar diretamente o número da opção ou Esc para sair.
-    Caso o terminal não seja interativo (ex.: testes ou scripts), recorre a Prompt.ask.
+    Also supports typing option shortcut numbers directly or Esc to exit.
+    Falls back to Prompt.ask if stdin is non-interactive (e.g. scripts or tests).
     """
     if not sys.stdin.isatty() or msvcrt is None:
         ui.console.print()
         ui.console.print(ui.menu_panel(options, title=title))
         choices = [k for k, _ in options]
-        return Prompt.ask("Escolha", choices=choices, default=default_key or choices[0])
+        return Prompt.ask(t("interactive.choice_prompt"), choices=choices, default=default_key or choices[0])
 
-    # Encontra o índice inicial baseado no default_key
     selected_idx = 0
     if default_key:
         for idx, (k, _) in enumerate(options):
@@ -126,13 +126,13 @@ def select_menu(
             elif key == "ENTER":
                 return options[selected_idx][0]
             elif key in ("ESC", "q", "Q"):
-                # Se houver opção "0" (sair/voltar), seleciona ela; senão a última
+                # If there is a "0" (back/exit) option, select it; otherwise select the last option
                 for k, _ in options:
                     if k == "0":
                         return "0"
                 return options[-1][0]
             else:
-                # Atalho direto pelo número ou letra
+                # Direct numeric/alphanumeric shortcut
                 for idx, (k, _) in enumerate(options):
                     if key.lower() == k.lower():
                         return k
@@ -144,14 +144,14 @@ def render_findings_table(
     title: str = "Selecione um item",
     window_size: int = 15,
 ) -> Table:
-    """Renderiza a tabela de findings com a linha ativa destacada e paginação deslizante."""
-    t = Table(title=title, title_style="bold", header_style="bold", box=None, padding=(0, 1))
-    t.add_column(" ", width=2, justify="right")
-    t.add_column("#", justify="right", width=3)
-    t.add_column("Tamanho", justify="right", width=11)
-    t.add_column("Item", width=18)
-    t.add_column("Categoria", width=12)
-    t.add_column("Caminho", overflow="fold")
+    """Render findings table with active row highlighted and sliding window pagination."""
+    t_find = Table(title=title, title_style="bold", header_style="bold", box=None, padding=(0, 1))
+    t_find.add_column(" ", width=2, justify="right")
+    t_find.add_column("#", justify="right", width=3)
+    t_find.add_column(t("scan.col_size"), justify="right", width=11)
+    t_find.add_column(t("scan.col_item"), width=18)
+    t_find.add_column(t("scan.col_category"), width=12)
+    t_find.add_column(t("scan.col_path"), overflow="fold")
 
     total = len(findings)
     if total <= window_size:
@@ -173,7 +173,7 @@ def render_findings_table(
         path_str = str(f.path)
 
         if i == selected_idx:
-            t.add_row(
+            t_find.add_row(
                 Text(" >", style="bold bright_cyan"),
                 Text(f" {num_str} ", style="bold bright_white on blue"),
                 Text(f" {size_str} ", style="bold bright_white on blue"),
@@ -183,7 +183,7 @@ def render_findings_table(
             )
         else:
             cat_style = CATEGORY_STYLE.get(f.kind, "white")
-            t.add_row(
+            t_find.add_row(
                 Text("  "),
                 Text(num_str, style="dim"),
                 Text(size_str, style="bold" if f.gb >= 5 else ""),
@@ -191,24 +191,26 @@ def render_findings_table(
                 Text(cat_label, style=cat_style),
                 Text(path_str, style="dim"),
             )
-    return t
+    return t_find
 
 
 def select_finding(
     findings: list[Finding],
-    title: str = "Itens encontrados",
+    title: str | None = None,
 ) -> Finding | None:
-    """Permite ao usuário navegar visualmente pela lista de findings e escolher um com as setas.
+    """Allow the user to navigate the findings list interactively using arrow keys.
 
-    Retorna o Finding selecionado ou None se o usuário teclar Esc ou voltar.
+    Returns the selected Finding or None if the user presses Esc or cancels.
     """
     if not findings:
         return None
 
+    display_title = title or t("interactive.select_item_title")
+
     if not sys.stdin.isatty() or msvcrt is None:
         ui.console.print()
-        ui.console.print(ui.findings_table(findings, title))
-        raw = Prompt.ask("Número do item (ou Enter para voltar)", default="")
+        ui.console.print(ui.findings_table(findings, display_title))
+        raw = Prompt.ask(t("interactive.choice_prompt"), default="")
         if not raw.strip():
             return None
         try:
@@ -220,7 +222,7 @@ def select_finding(
         return None
 
     hint = "(↑/↓ navegar, Enter escolher, Esc voltar)" if ui.UNICODE else "(Setas navegar, Enter escolher, Esc voltar)"
-    panel_title = f"{title} {hint}"
+    panel_title = f"{display_title} {hint}"
 
     selected_idx = 0
     with Live(
@@ -250,7 +252,7 @@ def select_finding(
             elif key in ("ESC", "q", "Q"):
                 return None
             elif key.isdigit():
-                # Digitação numérica opcional (1..len)
+                # Direct numeric entry
                 num = int(key)
                 if 1 <= num <= len(findings):
                     selected_idx = num - 1

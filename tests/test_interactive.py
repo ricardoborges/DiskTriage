@@ -51,6 +51,19 @@ class TestInteractive(unittest.TestCase):
         assert chosen is not None
         self.assertEqual(chosen.ident, "item2")
 
+    def test_render_findings_table_multilang(self):
+        from pydisktriage.i18n import set_language
+        findings = [
+            Finding("npm-cache", Path("C:/test1"), "movivel", 1024, 1, False),
+        ]
+        set_language("en-US")
+        t_en = render_findings_table(findings, selected_idx=0)
+        self.assertEqual(len(t_en.rows), 1)
+
+        set_language("pt-BR")
+        t_pt = render_findings_table(findings, selected_idx=0)
+        self.assertEqual(len(t_pt.rows), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
