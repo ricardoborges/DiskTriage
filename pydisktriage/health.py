@@ -1,8 +1,8 @@
-"""Diagnóstico de saúde: espaço, latência dos discos, pagefile e telas azuis.
+"""System health diagnostics: disk space, disk latency, pagefile configuration, and blue screens (BSODs).
 
-Os dados vêm do PowerShell, porque `Get-StorageReliabilityCounter` e
-`Get-WinEvent` não têm equivalente decente em Python puro. Cada consulta devolve
-JSON, então o parsing é trivial e não depende do idioma do Windows.
+Data is retrieved via PowerShell because `Get-StorageReliabilityCounter` and `Get-WinEvent`
+lack direct equivalents in the Python standard library on Windows. Queries return JSON,
+making parsing trivial and independent of the operating system language.
 """
 
 from __future__ import annotations
@@ -14,11 +14,13 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .i18n import t
+
 _PS_PRELUDE = "$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
 
 
 def _run_ps(script: str, timeout: int = 90) -> list[dict]:
-    """Roda um trecho de PowerShell que emite JSON e devolve lista de dicts."""
+    """Execute a PowerShell snippet that emits JSON and return a list of dictionaries."""
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_PRELUDE + script],
@@ -64,6 +66,16 @@ class VolumeInfo:
             return "apertado"
         return "ok"
 
+    @property
+    def verdict_label(self) -> str:
+        """Return localized verdict text."""
+        pct = self.pct_free
+        if pct < 10:
+            return t("health.verdict_critical")
+        if pct < 20:
+            return t("health.verdict_tight")
+        return t("health.verdict_ok")
+
 
 @dataclass
 class DiskLatency:
@@ -84,17 +96,17 @@ class Bugcheck:
     when: str
     code: str
 
-    #: Tradução dos códigos que mais aparecem em máquina de desenvolvimento.
+    #: Explanations for common developer machine bugcheck codes.
     MEANINGS = {
-        "0x0000001e": "KMODE_EXCEPTION_NOT_HANDLED — exceção não tratada em kernel",
-        "0x0000004e": "PFN_LIST_CORRUPT — corrupção de lista de páginas (suspeite da RAM)",
+        "0x0000001e": "KMODE_EXCEPTION_NOT_HANDLED — unhandled kernel exception",
+        "0x0000004e": "PFN_LIST_CORRUPT — corrupted page frame number list (inspect RAM)",
         "0x00000050": "PAGE_FAULT_IN_NONPAGED_AREA",
         "0x0000007e": "SYSTEM_THREAD_EXCEPTION_NOT_HANDLED",
-        "0x000000c2": "BAD_POOL_CALLER — driver liberando memória errada",
+        "0x000000c2": "BAD_POOL_CALLER — driver freed invalid memory pool",
         "0x000000d1": "DRIVER_IRQL_NOT_LESS_OR_EQUAL",
-        "0x0000010d": "WDF_VIOLATION — bug em driver do framework",
-        "0x00000133": "DPC_WATCHDOG_VIOLATION — driver travou a CPU",
-        "0x00000139": "KERNEL_SECURITY_CHECK_FAILURE — corrupção de estrutura",
+        "0x0000010d": "WDF_VIOLATION — driver framework fault",
+        "0x00000133": "DPC_WATCHDOG_VIOLATION — driver hung execution",
+        "0x00000139": "KERNEL_SECURITY_CHECK_FAILURE — corrupted critical structure",
         "0x000000ef": "CRITICAL_PROCESS_DIED",
     }
 
@@ -104,7 +116,7 @@ class Bugcheck:
 
 
 def get_volumes() -> list[VolumeInfo]:
-    """Espaço livre por volume, via shutil (não depende do PowerShell)."""
+    """Return free and total disk space per volume using shutil."""
     vols: list[VolumeInfo] = []
     labels = {d.get("Letra"): d.get("Rotulo") or ""
               for d in _run_ps(
@@ -125,10 +137,10 @@ def get_volumes() -> list[VolumeInfo]:
 
 
 def get_latency() -> tuple[list[DiskLatency], bool]:
-    """Contadores de latência por disco físico.
+    """Retrieve maximum physical disk latency counters.
 
-    Precisa de elevação. Devolve (lista, elevado) — lista vazia com elevado=False
-    significa que a consulta foi negada, não que os discos estão bem.
+    Requires elevated administrator privileges. Returns (disks, elevated).
+    An empty disk list with elevated=False indicates the query was denied.
     """
     rows = _run_ps(
         "Get-PhysicalDisk | ForEach-Object { $d=$_; "
@@ -155,6 +167,7 @@ def get_latency() -> tuple[list[DiskLatency], bool]:
 
 
 def get_pagefiles() -> list[dict]:
+    """Query active Windows pagefile allocations."""
     return _run_ps(
         "Get-CimInstance Win32_PageFileUsage | "
         "Select-Object @{n='Caminho';e={$_.Name}},"
@@ -164,6 +177,7 @@ def get_pagefiles() -> list[dict]:
 
 
 def get_bugchecks(days: int = 90) -> list[Bugcheck]:
+    """Retrieve Windows BSOD crash bugchecks logged in the System Event Log within the specified days."""
     rows = _run_ps(
         "Get-WinEvent -FilterHashtable @{LogName='System';Id=1001;"
         "ProviderName='Microsoft-Windows-WER-SystemErrorReporting';"
@@ -181,5 +195,6 @@ def get_bugchecks(days: int = 90) -> list[Bugcheck]:
 
 
 def minidump_dir() -> Path:
+    """Return the Windows Minidump directory path."""
     import os
     return Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Minidump"

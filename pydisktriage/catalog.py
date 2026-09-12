@@ -1,13 +1,12 @@
-"""Catálogo de caches conhecidos.
+"""Catalog of known cache and temporary directories.
 
-Cada entrada descreve um diretório (ou arquivo) que costuma acumular gigabytes
-numa máquina de desenvolvimento, junto com:
+Each entry describes a directory (or file) that commonly accumulates gigabytes
+on a development machine, along with:
 
-  * a categoria — se dá para apagar sem pensar, mover para outro disco, ou se
-    exige julgamento humano;
-  * a variável de ambiente que redireciona a ferramenta para um novo caminho;
-  * o comando nativo da ferramenta para limpar (quase sempre preferível a sair
-    apagando arquivo na mão).
+  * category — whether it can be safely discarded, moved to another disk, or
+    requires human review;
+  * environment variable that redirects the tool to a new path;
+  * native clean command (almost always preferred over manual file deletion).
 """
 
 from __future__ import annotations
@@ -16,6 +15,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
+
+from .i18n import t
 
 DISCARD = "descartavel"
 MOVE = "movivel"
@@ -29,14 +30,38 @@ CATEGORY_STYLE = {
     REVIEW: "magenta",
 }
 
-CATEGORY_LABEL = {
+
+def get_category_label(kind: str) -> str:
+    """Return the localized label for a category kind."""
+    if kind == DISCARD:
+        return t("category.discard")
+    if kind == MOVE:
+        return t("category.move")
+    if kind == REVIEW:
+        return t("category.review")
+    return kind
+
+
+class _CategoryLabelProxy(dict):
+    """Proxy dictionary for backward compatibility with CATEGORY_LABEL[kind]."""
+
+    def __getitem__(self, key: str) -> str:
+        return get_category_label(key)
+
+    def get(self, key: str, default: str | None = None) -> str:
+        if key in CATEGORY_ORDER:
+            return get_category_label(key)
+        return default if default is not None else key
+
+
+CATEGORY_LABEL = _CategoryLabelProxy({
     DISCARD: "Descartável",
     MOVE: "Movível",
     REVIEW: "Revisar",
-}
+})
 
-#: Caminhos que o programa se recusa a apagar ou mover, aconteça o que acontecer.
-#: Mexer neles à mão quebra o Windows ou a desinstalação de programas.
+#: System-protected paths that the tool refuses to delete or move under any circumstances.
+#: Modifying them manually damages Windows or software uninstallation integrity.
 PROTECTED = (
     "windows\\winsxs",
     "windows\\installer",
@@ -49,7 +74,7 @@ PROTECTED = (
 
 @dataclass(frozen=True)
 class Target:
-    """Uma entrada do catálogo, ainda sem medição."""
+    """A catalog entry before disk measurement."""
 
     ident: str
     path: Path
@@ -61,7 +86,7 @@ class Target:
 
 @dataclass
 class Finding:
-    """Uma entrada do catálogo depois de medida no disco."""
+    """A catalog entry after disk measurement."""
 
     ident: str
     path: Path
@@ -83,10 +108,18 @@ class Finding:
         low = str(self.path).lower()
         return any(p in low for p in PROTECTED)
 
+    @property
+    def localized_note(self) -> str:
+        """Return localized note if available, otherwise return raw note."""
+        key = "catalog.note." + self.ident.replace("-", "_")
+        localized = t(key)
+        if localized != key:
+            return localized
+        return self.note
+
 
 def build_catalog(home: Path | None = None) -> list[Target]:
-    """Monta o catálogo já resolvido para o perfil informado."""
-
+    """Build the catalog resolved for the specified user profile directory."""
     u = Path(home or Path.home())
     la = u / "AppData" / "Local"
     ra = u / "AppData" / "Roaming"
@@ -94,131 +127,131 @@ def build_catalog(home: Path | None = None) -> list[Target]:
     sysdrive = Path(os.environ.get("SystemDrive", "C:") + "\\")
     progdata = Path(os.environ.get("ProgramData", r"C:\ProgramData"))
 
-    t: list[Target] = []
-    add = t.append
+    t_list: list[Target] = []
+    add = t_list.append
 
-    # ------------------------------ lixo puro ------------------------------
-    add(Target("temp-user", la / "Temp", DISCARD, note="Temporários do usuário"))
-    add(Target("temp-win", win / "Temp", DISCARD, note="Temporários do Windows"))
-    add(Target("crashdumps", la / "CrashDumps", DISCARD, note="Dumps de processos que travaram"))
-    add(Target("winre-agent", sysdrive / "$WinREAgent", DISCARD, note="Resto de servicing de update"))
+    # ------------------------------ Pure cache / disposable ------------------------------
+    add(Target("temp-user", la / "Temp", DISCARD, note="User temporary files"))
+    add(Target("temp-win", win / "Temp", DISCARD, note="Windows temporary files"))
+    add(Target("crashdumps", la / "CrashDumps", DISCARD, note="Crashed process core dumps"))
+    add(Target("winre-agent", sysdrive / "$WinREAgent", DISCARD, note="Windows Update servicing leftovers"))
     add(Target("wu-download", win / "SoftwareDistribution" / "Download", DISCARD,
-               clean_cmd="Stop-Service wuauserv,bits", note="Updates já aplicados"))
-    add(Target("d3dcache", la / "D3DSCache", DISCARD, note="Cache de shader DirectX"))
-    add(Target("nv-dxcache", la / "NVIDIA" / "DXCache", DISCARD, note="Cache de shader NVIDIA"))
-    add(Target("nv-glcache", la / "NVIDIA" / "GLCache", DISCARD, note="Cache de shader OpenGL"))
+               clean_cmd="Stop-Service wuauserv,bits", note="Already installed Windows Updates"))
+    add(Target("d3dcache", la / "D3DSCache", DISCARD, note="DirectX shader cache"))
+    add(Target("nv-dxcache", la / "NVIDIA" / "DXCache", DISCARD, note="NVIDIA shader cache"))
+    add(Target("nv-glcache", la / "NVIDIA" / "GLCache", DISCARD, note="OpenGL shader cache"))
     add(Target("choco-bad", progdata / "chocolatey" / "lib-bad", DISCARD,
-               note="Instalações falhas do Chocolatey"))
+               note="Failed Chocolatey package installations"))
 
-    # ------------- caches de dev: apagáveis E redirecionáveis --------------
+    # ------------- Developer caches: disposable AND relocatable --------------
     add(Target("npm-cache", la / "npm-cache", MOVE, "npm_config_cache",
-               "npm cache clean --force", "Cache do npm"))
+               "npm cache clean --force", "npm package cache"))
     add(Target("yarn-cache", la / "Yarn" / "Cache", MOVE, "YARN_CACHE_FOLDER",
-               "yarn cache clean", "Cache do Yarn"))
+               "yarn cache clean", "Yarn cache"))
     add(Target("pnpm-store", la / "pnpm-store", MOVE, "PNPM_HOME",
-               "pnpm store prune", "Store do pnpm"))
+               "pnpm store prune", "pnpm global store"))
     add(Target("pip-cache", la / "pip" / "Cache", MOVE, "PIP_CACHE_DIR",
-               "pip cache purge", "Cache do pip"))
+               "pip cache purge", "pip download cache"))
     add(Target("uv-cache", la / "uv" / "cache", MOVE, "UV_CACHE_DIR",
-               "uv cache clean", "Cache do uv"))
+               "uv cache clean", "uv cache"))
     add(Target("poetry", la / "pypoetry" / "Cache", MOVE, "POETRY_CACHE_DIR",
-               "poetry cache clear --all .", "Cache do Poetry"))
+               "poetry cache clear --all .", "Poetry cache"))
     add(Target("nuget", u / ".nuget" / "packages", MOVE, "NUGET_PACKAGES",
-               "dotnet nuget locals all --clear", "Pacotes NuGet"))
+               "dotnet nuget locals all --clear", "NuGet packages"))
     add(Target("gradle", u / ".gradle", MOVE, "GRADLE_USER_HOME",
-               note="Cache do Gradle"))
+               note="Gradle cache"))
     add(Target("maven", u / ".m2" / "repository", MOVE,
-               note="Repositório Maven (ajuste settings.xml)"))
+               note="Maven repository (configure in settings.xml)"))
     add(Target("cargo", u / ".cargo", MOVE, "CARGO_HOME",
-               note="Registry e binários do Cargo"))
+               note="Cargo registry and prebuilt binaries"))
     add(Target("rustup", u / ".rustup", MOVE, "RUSTUP_HOME",
-               "rustup toolchain list", "Toolchains do Rust"))
+               "rustup toolchain list", "Rust toolchains"))
     add(Target("go-mod", u / "go" / "pkg" / "mod", MOVE, "GOMODCACHE",
-               "go clean -modcache", "Módulos Go"))
+               "go clean -modcache", "Go module cache"))
     add(Target("pyenv", u / ".pyenv", MOVE, "PYENV_ROOT",
-               "pyenv versions", "Versões do Python"))
+               "pyenv versions", "Installed Python versions"))
     add(Target("conda-pkgs", u / "anaconda3" / "pkgs", MOVE, "CONDA_PKGS_DIRS",
-               "conda clean --all", "Pacotes conda"))
+               "conda clean --all", "Conda package cache"))
     add(Target("playwright", la / "ms-playwright", MOVE, "PLAYWRIGHT_BROWSERS_PATH",
-               note="Navegadores do Playwright"))
+               note="Playwright headless browsers"))
     add(Target("puppeteer", la / "Puppeteer", MOVE, "PUPPETEER_CACHE_DIR",
-               note="Navegadores do Puppeteer"))
+               note="Puppeteer headless browsers"))
     add(Target("scoop-cache", u / "scoop" / "cache", MOVE, "SCOOP_CACHE",
-               "scoop cache rm *", "Cache do Scoop"))
+               "scoop cache rm *", "Scoop download cache"))
     add(Target("vcpkg-arch", la / "vcpkg" / "archives", MOVE, "VCPKG_DEFAULT_BINARY_CACHE",
-               note="Cache binário do vcpkg"))
+               note="vcpkg binary archives"))
 
-    # ---------------- modelos de IA: os maiores ofensores -------------------
+    # ---------------- AI models: highest disk usage offenders -------------------
     add(Target("hf-cache", u / ".cache" / "huggingface", MOVE, "HF_HOME",
-               note="Modelos Hugging Face"))
+               note="Hugging Face AI models"))
     add(Target("torch-cache", u / ".cache" / "torch", MOVE, "TORCH_HOME",
-               note="Modelos PyTorch"))
+               note="PyTorch AI models"))
     add(Target("whisper", u / ".cache" / "whisper", MOVE, "XDG_CACHE_HOME",
-               note="Modelos Whisper"))
+               note="Whisper audio models"))
     add(Target("clip-cache", u / ".cache" / "clip", MOVE, "XDG_CACHE_HOME",
-               note="Modelos CLIP"))
+               note="CLIP vision models"))
     add(Target("ollama", u / ".ollama" / "models", MOVE, "OLLAMA_MODELS",
-               "ollama list", "Modelos do Ollama"))
+               "ollama list", "Ollama local models"))
     add(Target("lmstudio", u / ".lmstudio" / "models", REVIEW,
-               note="Modelos do LM Studio — mova pela GUI do app"))
+               note="LM Studio models — relocate via app GUI"))
 
-    # ------------------------- containers e VMs ----------------------------
+    # ------------------------- Containers and VMs ----------------------------
     add(Target("docker", la / "Docker", REVIEW, clean_cmd="docker system prune -a",
                note="Docker Desktop: Settings > Resources > Advanced > Disk image location"))
     add(Target("wsl-pkgs", la / "Packages", REVIEW,
-               note="Pode conter ext4.vhdx de distros WSL — mova com wsl --export / --import"))
+               note="May contain WSL ext4.vhdx disks — move with wsl --export / --import"))
 
-    # ------------------------ mobile e game dev ----------------------------
+    # ------------------------ Mobile and game dev ----------------------------
     add(Target("android-sdk", la / "Android" / "Sdk", MOVE, "ANDROID_SDK_ROOT",
-               note="SDK do Android"))
+               note="Android SDK"))
     add(Target("android-avd", u / ".android" / "avd", MOVE, "ANDROID_AVD_HOME",
-               note="Emuladores Android"))
+               note="Android Virtual Devices (emulators)"))
     add(Target("unity-cache", la / "Unity" / "cache", MOVE, "UNITY_CACHE_PATH",
-               note="Cache do Unity"))
+               note="Unity cache"))
     add(Target("unreal-ddc", la / "UnrealEngine" / "Common" / "DerivedDataCache", DISCARD,
-               note="Derived Data Cache da Unreal"))
+               note="Unreal Engine Derived Data Cache"))
 
-    # ------------------------------ editores -------------------------------
-    add(Target("vscode-cache", ra / "Code" / "Cache", DISCARD, note="Cache do VS Code"))
-    add(Target("vscode-cd", ra / "Code" / "CachedData", DISCARD, note="CachedData do VS Code"))
+    # ------------------------------ Editors -------------------------------
+    add(Target("vscode-cache", ra / "Code" / "Cache", DISCARD, note="VS Code cache"))
+    add(Target("vscode-cd", ra / "Code" / "CachedData", DISCARD, note="VS Code CachedData"))
     add(Target("vscode-ext", u / ".vscode" / "extensions", REVIEW,
-               clean_cmd="code --list-extensions", note="Extensões do VS Code"))
+               clean_cmd="code --list-extensions", note="VS Code extensions"))
     add(Target("vscode-ipch", la / "Microsoft" / "vscode-cpptools" / "ipch", DISCARD,
-               note="Cabeçalhos pré-compilados C/C++ do VS Code"))
+               note="VS Code C/C++ precompiled headers"))
     add(Target("vscode-cpptools", la / "Microsoft" / "vscode-cpptools", MOVE,
-               note="IntelliSense e bancos C/C++ do VS Code (mova via Junção NTFS)"))
-    add(Target("jetbrains", la / "JetBrains", REVIEW, note="Caches e índices JetBrains"))
+               note="VS Code C/C++ IntelliSense databases (relocate via NTFS Junction)"))
+    add(Target("jetbrains", la / "JetBrains", REVIEW, note="JetBrains caches and indexing data"))
     add(Target("postman", la / "Postman", REVIEW,
-               note="Versões instaladas do Postman (verifique versões antigas)"))
+               note="Installed Postman versions (check for legacy versions)"))
 
-    # ----------------------------- navegadores -----------------------------
+    # ----------------------------- Browsers -----------------------------
     add(Target("chrome-cache", la / "Google" / "Chrome" / "User Data" / "Default" / "Cache",
-               DISCARD, note="Cache do Chrome"))
+               DISCARD, note="Google Chrome cache"))
     add(Target("chrome-codecache", la / "Google" / "Chrome" / "User Data" / "Default" / "Code Cache",
-               DISCARD, note="Code Cache de scripts do Chrome"))
+               DISCARD, note="Google Chrome script code cache"))
     add(Target("chrome-userdata", la / "Google" / "Chrome" / "User Data", MOVE,
-               note="Perfil completo do Chrome (mova via Junção NTFS)"))
+               note="Full Chrome user profile (relocate via NTFS Junction)"))
     add(Target("edge-cache", la / "Microsoft" / "Edge" / "User Data" / "Default" / "Cache",
-               DISCARD, note="Cache do Edge"))
+               DISCARD, note="Microsoft Edge cache"))
 
-    # -------------------------- ferramentas e IA ---------------------------
+    # -------------------------- Tools and AI utilities ---------------------------
     add(Target("ollama-updates", la / "Ollama" / "updates_v2", DISCARD,
-               note="Instaladores de atualizações antigas do Ollama"))
+               note="Legacy Ollama update installers"))
     add(Target("datalab", la / "datalab", MOVE,
-               note="Modelos e caches de IA (OCR/Marker/Surya) do Datalab"))
+               note="Datalab AI models and OCR caches"))
 
-    # -------------------------------- jogos --------------------------------
+    # -------------------------------- Games --------------------------------
     add(Target("msfs-rolling", ra / "Microsoft Flight Simulator" / "ROLLINGCACHE.CCC",
-               DISCARD, note="Rolling cache do MSFS — prefira apagar pelo jogo"))
+               DISCARD, note="MSFS rolling cache — preferred removal via in-game settings"))
     add(Target("msfs-store",
                la / "Packages" / "Microsoft.FlightSimulator_8wekyb3d8bbwe" / "LocalCache",
-               REVIEW, note="Cache do MSFS (versão Store)"))
+               REVIEW, note="MSFS cache (Microsoft Store version)"))
 
-    # ------------- pastas do sistema com ferramenta própria -----------------
+    # ------------- System folders with their own cleanup tools -----------------
     add(Target("winsxs", win / "WinSxS", REVIEW,
                clean_cmd="Dism /Online /Cleanup-Image /StartComponentCleanup /ResetBase",
-               note="NÃO apague na mão — use o DISM"))
+               note="DO NOT delete manually — run DISM"))
     add(Target("win-installer", win / "Installer", REVIEW,
-               note="NÃO apague na mão — use o PatchCleaner"))
+               note="DO NOT delete manually — run PatchCleaner"))
 
-    return t
+    return t_list
