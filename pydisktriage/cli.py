@@ -1,4 +1,4 @@
-"""Laço principal: menu, estado da sessão e roteamento das ações."""
+"""Main CLI loop: interactive menus, session state, action dispatching, and localization."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import csv
 import json
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
@@ -14,11 +15,22 @@ from rich.prompt import Prompt
 
 from . import actions, health, ui
 from .cache import clear_scan_cache, load_scan_cache, save_scan_cache
-from .catalog import Finding
+from .catalog import Finding, get_category_label
+from .config import get_configured_language, set_configured_language
 from .fsutil import human
+from .i18n import (
+    get_available_languages,
+    get_language,
+    normalize_language,
+    set_language,
+    t,
+)
 from .interactive import select_finding, select_menu
-from .scanner import (scan_catalog, scan_discovery,
-                      scan_large_files)
+from .scanner import (
+    scan_catalog,
+    scan_discovery,
+    scan_large_files,
+)
 
 
 @dataclass
@@ -34,7 +46,7 @@ class Session:
 
 
 def _sync_cache(session: Session) -> None:
-    """Atualiza o cache em disco com o estado atual da sessão."""
+    """Update disk cache with current session findings."""
     if session.scanned:
         save_scan_cache(
             findings=session.findings,
@@ -46,11 +58,12 @@ def _sync_cache(session: Session) -> None:
 
 
 # --------------------------------------------------------------------------
-# telas
+# Screens
 # --------------------------------------------------------------------------
 
 def screen_health() -> None:
-    ui.rule("Diagnóstico de saúde")
+    """Display disk space, SSD latency, pagefile, and BSOD bugcheck diagnostic report."""
+    ui.rule(t("health.rule_title"))
 
     vols = health.get_volumes()
     ui.console.print()
@@ -59,86 +72,84 @@ def screen_health() -> None:
     for v in vols:
         if v.pct_free < 10:
             ui.console.print()
-            ui.error(f"{v.letter}: com apenas {v.pct_free}% livre.")
-            ui.info("Abaixo de ~10% o cache SLC do SSD deixa de funcionar e a "
-                    "latência dispara. É assim que um disco cheio vira tela azul.")
+            ui.error(t("health.warn_low_space", drive=v.letter, pct=v.pct_free))
+            ui.info(t("health.info_slc_cache"))
 
     disks, elevated = health.get_latency()
     ui.console.print()
     if not elevated:
-        ui.info("Latência dos discos indisponível — rode como administrador "
-                "para ver esta seção.")
+        ui.info(t("health.latency_admin_required"))
     else:
         ui.console.print(ui.latency_table(disks))
         for d in disks:
             if d.suspicious:
                 ui.console.print()
-                ui.error(f"{d.name}: pico de {d.read_ms} ms na leitura.")
-                ui.info("Um NVMe saudável fica abaixo de 10 ms. Stalls desta "
-                        "ordem causam STATUS_IN_PAGE_ERROR e tela azul.")
+                ui.error(t("health.latency_spike_warn", disk=d.name, read_ms=d.read_ms))
+                ui.info(t("health.latency_nvme_info"))
 
     pfs = health.get_pagefiles()
     if pfs:
         ui.console.print()
-        ui.console.print("[bold]Pagefile[/bold]")
+        ui.console.print(f"[bold]{t('health.pagefile_title')}[/bold]")
         for p in pfs:
             ui.console.print(f"  {p.get('Caminho')}  "
                              f"[dim]{p.get('TamanhoMB')} MB "
-                             f"(pico {p.get('PicoMB')} MB)[/dim]")
+                             f"(peak {p.get('PicoMB')} MB)[/dim]")
 
     bugs = health.get_bugchecks()
     ui.console.print()
     if not bugs:
-        ui.ok("Nenhuma tela azul nos últimos 90 dias.")
+        ui.ok(t("health.no_bugchecks"))
     else:
         ui.console.print(ui.bugchecks_table(bugs))
         ui.console.print()
-        ui.warn(f"{len(bugs)} bugcheck(s). Dumps em {health.minidump_dir()}")
-        ui.info('Analise com: windbgx -z <dump> -c "!analyze -v; q" '
-                "-logo %TEMP%\\bsod.txt")
-        ui.info("Olhe FAILURE_BUCKET_ID, MODULE_NAME e IMAGE_NAME no resultado.")
+        ui.warn(t("health.bugchecks_found", count=len(bugs), dump_dir=health.minidump_dir()))
+        ui.info(t("health.windbg_tip"))
+        ui.info(t("health.windbg_fields"))
 
 
 def screen_scan(session: Session, discovery: bool) -> None:
-    ui.rule("Varredura")
+    """Execute catalog and optional deep discovery scan, updating the cache and session."""
+    ui.rule(t("scan.rule_title"))
 
     with Progress(SpinnerColumn(), TextColumn("[bold blue]{task.description}"),
                   BarColumn(bar_width=None),
                   TextColumn("{task.completed}/{task.total}"),
                   console=ui.console) as prog:
 
-        task = prog.add_task("catálogo", total=1)
+        task_catalog_desc = t("scan.task_catalog")
+        task = prog.add_task(task_catalog_desc, total=1)
 
         def status(label: str, i: int, total: int) -> None:
-            prog.update(task, description=f"catálogo · {label}",
+            prog.update(task, description=f"{task_catalog_desc} · {label}",
                         completed=i, total=total)
 
         session.findings = scan_catalog(session.home, session.min_gb, status)
 
         if discovery:
-            task2 = prog.add_task("descoberta", total=1)
+            task_disc_desc = t("scan.task_discovery")
+            task2 = prog.add_task(task_disc_desc, total=1)
 
             def status2(label: str, i: int, total: int) -> None:
-                prog.update(task2, description=f"descoberta · {label}",
+                prog.update(task2, description=f"{task_disc_desc} · {label}",
                             completed=i, total=total)
 
             extra = scan_discovery(session.home, session.findings,
                                    session.min_gb, status2)
             session.findings.extend(extra)
 
-            task3 = prog.add_task("arquivos grandes", total=1)
+            task3 = prog.add_task(t("scan.task_large_files"), total=1)
             session.large_files = scan_large_files(session.home)
             prog.update(task3, completed=1, total=1)
 
     session.findings.sort(key=lambda f: f.size, reverse=True)
     session.scanned = True
     session.discovery = discovery
-    from datetime import datetime
     session.last_scan_time = datetime.now().strftime("%d/%m/%Y %H:%M")
     _sync_cache(session)
 
     ui.console.print()
-    ui.console.print(ui.findings_table(session.findings, "Itens encontrados"))
+    ui.console.print(ui.findings_table(session.findings, t("scan.found_items_title")))
     if session.large_files:
         ui.console.print()
         ui.console.print(ui.large_files_table(session.large_files))
@@ -147,12 +158,13 @@ def screen_scan(session: Session, discovery: bool) -> None:
 
 
 def screen_item_actions(session: Session) -> None:
+    """Present action menu for a specific chosen finding."""
     if not session.findings:
-        ui.warn("Rode a varredura primeiro (opção 2).")
+        ui.warn(t("scan.require_scan_first"))
         return
 
-    ui.rule("Ações sobre itens")
-    finding = select_finding(session.findings, "Selecione o item para agir")
+    ui.rule(t("actions.rule_title"))
+    finding = select_finding(session.findings, t("interactive.select_item_title"))
     if not finding:
         return
 
@@ -160,13 +172,13 @@ def screen_item_actions(session: Session) -> None:
 
     while True:
         action_options = [
-            ("1", "Excluir conteúdo"),
-            ("2", "Mover para outro disco (e ajustar variável de ambiente)"),
-            ("3", "Mover para outro disco via Junção NTFS (mklink /J)"),
-            ("4", "Só definir a variável de ambiente"),
-            ("5", "Ver o comando nativo de limpeza"),
-            ("6", "Abrir no Explorer"),
-            ("0", "Voltar"),
+            ("1", t("actions.opt_delete")),
+            ("2", t("actions.opt_move")),
+            ("3", t("actions.opt_move_junction")),
+            ("4", t("actions.opt_set_env")),
+            ("5", t("actions.opt_clean_cmd")),
+            ("6", t("actions.opt_open_explorer")),
+            ("0", t("menu.back")),
         ]
 
         choice = select_menu(action_options, title=f"{finding.ident} · {human(finding.size)}")
@@ -197,25 +209,25 @@ def screen_item_actions(session: Session) -> None:
 
 
 def screen_bulk_delete(session: Session) -> None:
-    """Apaga de uma vez tudo que é seguramente descartável."""
+    """Bulk delete all items classified as safe disposable cache."""
     targets = [f for f in session.findings
                if f.kind == "descartavel" and not f.protected]
     if not targets:
-        ui.warn("Nada classificado como descartável. Rode a varredura primeiro.")
+        ui.warn(t("bulk.require_scan"))
         return
 
-    ui.rule("Limpeza em lote")
+    ui.rule(t("bulk.rule_title"))
     ui.console.print()
-    ui.console.print(ui.findings_table(targets, "Serão apagados"))
+    ui.console.print(ui.findings_table(targets, t("bulk.table_title")))
     total = sum(f.size for f in targets)
     ui.console.print()
-    ui.console.print(f"Total a liberar: [bold green]{human(total)}[/bold green]")
+    ui.console.print(t("bulk.total_to_free", size=human(total)))
     ui.console.print()
 
-    typed = Prompt.ask("Digite [bold]APAGAR[/bold] para confirmar",
-                       default="", show_default=False)
-    if typed.strip().upper() != "APAGAR":
-        ui.info("Cancelado.")
+    keyword = t("bulk.confirm_keyword")
+    typed = Prompt.ask(t("bulk.confirm_prompt"), default="", show_default=False)
+    if typed.strip().upper() != keyword.upper():
+        ui.info(t("status.cancelled"))
         return
 
     freed = 0
@@ -229,101 +241,173 @@ def screen_bulk_delete(session: Session) -> None:
                                  keep_root=not f.is_file)
         freed += result.bytes_done
         if result.errors:
-            ui.warn(f"{len(result.errors)} arquivo(s) em uso, pulados.")
+            ui.warn(t("bulk.files_in_use", count=len(result.errors)))
 
     ui.console.print()
-    ui.ok(f"Liberado {human(freed)} no total.")
+    ui.ok(t("bulk.freed_total", size=human(freed)))
     session.findings = [f for f in session.findings if f not in targets]
     _sync_cache(session)
 
 
 def screen_export(session: Session) -> None:
+    """Export current scan results to CSV and JSON reports."""
     if not session.findings:
-        ui.warn("Rode a varredura primeiro.")
+        ui.warn(t("scan.require_scan_first"))
         return
 
-    out_dir = Path(Prompt.ask("Pasta de destino",
+    out_dir = Path(Prompt.ask(t("export.dest_prompt"),
                               default=str(Path.home() / "Desktop")))
 
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        ui.error(f"Não consegui criar {out_dir}: {exc}")
+        ui.error(t("export.dir_create_error", path=out_dir, err=exc))
         return
 
-    csv_path = out_dir / "triagem.csv"
-    json_path = out_dir / "triagem.json"
+    stem = "triagem" if get_language() == "pt-BR" else "triage"
+    csv_path = out_dir / f"{stem}.csv"
+    json_path = out_dir / f"{stem}.json"
 
     try:
         with csv_path.open("w", newline="", encoding="utf-8-sig") as fh:
             writer = csv.writer(fh, delimiter=";")
-            writer.writerow(["Bytes", "GB", "Categoria", "Item", "Caminho",
-                             "Variavel", "Comando", "Observacao"])
+            writer.writerow([
+                t("export.col_bytes"),
+                t("export.col_gb"),
+                t("export.col_category"),
+                t("export.col_item"),
+                t("export.col_path"),
+                t("export.col_var"),
+                t("export.col_cmd"),
+                t("export.col_note"),
+            ])
             for f in session.findings:
-                writer.writerow([f.size, f.gb, f.kind, f.ident, str(f.path),
-                                 f.env_var, f.clean_cmd, f.note])
+                writer.writerow([
+                    f.size,
+                    f.gb,
+                    get_category_label(f.kind),
+                    f.ident,
+                    str(f.path),
+                    f.env_var,
+                    f.clean_cmd,
+                    f.localized_note,
+                ])
 
         json_path.write_text(json.dumps([
-            {"bytes": f.size, "gb": f.gb, "categoria": f.kind, "item": f.ident,
-             "caminho": str(f.path), "variavel": f.env_var,
-             "comando": f.clean_cmd, "observacao": f.note}
+            {
+                "bytes": f.size,
+                "gb": f.gb,
+                "categoria": get_category_label(f.kind),
+                "item": f.ident,
+                "caminho": str(f.path),
+                "variavel": f.env_var,
+                "comando": f.clean_cmd,
+                "observacao": f.localized_note,
+            }
             for f in session.findings
         ], ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError as exc:
-        ui.error(f"Falha ao escrever o relatório: {exc}")
-        ui.info("Escolha uma pasta onde você tenha permissão de escrita.")
+        ui.error(t("export.write_error", err=exc))
+        ui.info(t("export.perm_tip"))
         return
 
-    ui.ok(f"Exportado:" + chr(10) + f"    {csv_path}" + chr(10) + f"    {json_path}")
+    ui.ok(t("export.success", csv_path=csv_path, json_path=json_path))
+
+
+def screen_change_language() -> None:
+    """Present interactive language selection and persist choice."""
+    ui.rule(t("lang.select_title"))
+    options = [
+        ("1", "Português (Brasil) [pt-BR]"),
+        ("2", "English (US) [en-US]"),
+        ("0", t("menu.back")),
+    ]
+    current = get_language()
+    default_key = "2" if current == "en-US" else "1"
+    choice = select_menu(options, title=t("lang.prompt"), default_key=default_key)
+    if choice == "0":
+        return
+
+    new_lang = "en-US" if choice == "2" else "pt-BR"
+    set_language(new_lang)
+    set_configured_language(new_lang)
+    ui.ok(t("lang.changed", lang=new_lang))
 
 
 # --------------------------------------------------------------------------
-# entrada
+# Main Menu & CLI Entry
 # --------------------------------------------------------------------------
 
 def get_main_menu(session: Session) -> list[tuple[str, str]]:
-    scan_prefix = "Refazer varredura" if session.scanned else "Varredura"
+    """Construct the main interactive menu options list."""
+    scan_prefix = t("menu.scan_prefix_redo") if session.scanned else t("menu.scan_prefix_new")
     menu = [
-        ("1", "Diagnóstico de saúde (espaço, latência, telas azuis)"),
-        ("2", f"{scan_prefix} completa (catálogo + descoberta)"),
-        ("3", f"{scan_prefix} rápida (só o catálogo)"),
-        ("4", "Agir sobre um item"),
-        ("5", "Apagar tudo que é descartável"),
-        ("6", "Exportar relatório"),
-        ("7", "Gerenciar/Reverter Junções NTFS"),
+        ("1", t("menu.health")),
+        ("2", t("menu.full_scan", prefix=scan_prefix)),
+        ("3", t("menu.fast_scan", prefix=scan_prefix)),
+        ("4", t("menu.item_actions")),
+        ("5", t("menu.bulk_delete")),
+        ("6", t("menu.export")),
+        ("7", t("menu.manage_junctions")),
     ]
     if session.scanned:
-        menu.append(("8", "Limpar cache da varredura"))
-    menu.append(("0", "Sair"))
+        menu.append(("8", t("menu.clear_cache")))
+    menu.append(("9", t("menu.change_lang")))
+    menu.append(("0", t("menu.exit")))
     return menu
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build command line argument parser."""
     p = argparse.ArgumentParser(
         prog="disktriage",
-        description="Triagem de espaço em disco no Windows: diagnostica a saúde "
-                    "do SSD e mostra o que dá para apagar, mover ou revisar.")
+        description="Disk space triage and SSD health diagnostics for Windows.")
     p.add_argument("--home", type=Path, default=Path.home(),
-                   help="perfil a analisar (padrão: o seu)")
+                   help="user profile path to analyze (default: current user)")
     p.add_argument("--min-gb", type=float, default=1.0,
-                   help="tamanho mínimo para um item aparecer (padrão: 1)")
+                   help="minimum item size in gigabytes to display (default: 1.0)")
     p.add_argument("--drive", dest="target_drive", default=None,
-                   help="disco de destino sugerido para mover (ex.: D)")
+                   help="suggested target drive letter for moving files (e.g. D)")
+    p.add_argument("--lang", "--language", dest="language", default=None,
+                   help="language code override (pt-BR or en-US)")
     p.add_argument("--scan", action="store_true",
-                   help="já entra com a varredura completa feita")
+                   help="immediately execute full scan upon launch")
     p.add_argument("--rescan", action="store_true",
-                   help="ignora o cache da última varredura e força nova leitura")
+                   help="ignore cached scan and force full rescan")
     p.add_argument("--health", action="store_true",
-                   help="só imprime o diagnóstico de saúde e sai")
+                   help="print system health diagnostics and exit")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Main execution controller."""
     if sys.platform != "win32":
-        ui.error("Esta ferramenta é específica para Windows.")
+        ui.error(t("app.win_only"))
         return 1
 
     args = build_parser().parse_args(argv)
+
+    # 1. Resolve language preference
+    if args.language:
+        lang = normalize_language(args.language)
+        set_language(lang)
+        set_configured_language(lang)
+    else:
+        configured = get_configured_language()
+        if configured is None:
+            # First run: prompt user to choose language and persist preference
+            ui.show_banner()
+            lang_options = [
+                ("1", "Português (Brasil) [pt-BR] (padrão)"),
+                ("2", "English (US) [en-US]"),
+            ]
+            choice = select_menu(lang_options, title="Language / Idioma", default_key="1")
+            chosen = "en-US" if choice == "2" else "pt-BR"
+            set_language(chosen)
+            set_configured_language(chosen)
+        else:
+            set_language(configured)
+
     session = Session(home=args.home, min_gb=args.min_gb,
                       target_drive=args.target_drive)
 
@@ -346,9 +430,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if session.scanned and not args.scan:
         ui.console.print()
-        ui.ok(f"Última varredura carregada do cache ({session.last_scan_time} · "
-              f"{len(session.findings)} itens encontrados).")
-        ui.console.print(ui.findings_table(session.findings, "Itens em cache"))
+        ui.ok(t("scan.cache_loaded", time=session.last_scan_time, count=len(session.findings)))
+        ui.console.print(ui.findings_table(session.findings, t("scan.cached_items_title")))
         if session.large_files:
             ui.console.print()
             ui.console.print(ui.large_files_table(session.large_files))
@@ -361,10 +444,10 @@ def main(argv: list[str] | None = None) -> int:
     while True:
         menu = get_main_menu(session)
         default_choice = "4" if session.scanned else "2"
-        choice = select_menu(menu, title="Menu", default_key=default_choice)
+        choice = select_menu(menu, title=t("menu.title"), default_key=default_choice)
 
         if choice == "0":
-            ui.console.print("\n[dim]até mais.[/dim]\n")
+            ui.console.print(f"\n[dim]{t('app.goodbye')}[/dim]\n")
             return 0
         if choice == "1":
             screen_health()
@@ -386,20 +469,22 @@ def main(argv: list[str] | None = None) -> int:
             session.large_files.clear()
             session.scanned = False
             session.last_scan_time = None
-            ui.ok("Cache da varredura apagado.")
+            ui.ok(t("scan.cache_cleared"))
+        elif choice == "9":
+            screen_change_language()
 
 
 def run() -> int:
-    """Ponto de entrada tolerante: Ctrl+C e fim de stdin nao viram traceback."""
+    """Tolerant entrypoint catching interrupts cleanly."""
     try:
         return main()
     except KeyboardInterrupt:
         ui.console.print()
-        ui.info("Interrompido.")
+        ui.info(t("app.interrupted"))
         return 130
     except EOFError:
         ui.console.print()
-        ui.info("Entrada encerrada.")
+        ui.info(t("app.input_closed"))
         return 0
 
 

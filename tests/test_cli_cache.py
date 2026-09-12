@@ -45,7 +45,7 @@ class TestCliCacheIntegration(unittest.TestCase):
         # Mocking user quitting immediately
         with patch("pydisktriage.cli.Prompt.ask", side_effect=["0"]):
             with patch("pydisktriage.cli.screen_health"):
-                ret = cli.main([])
+                ret = cli.main(["--lang", "pt-BR"])
 
         self.assertEqual(ret, 0)
         clear_scan_cache(cache_file=self.cache_file)
